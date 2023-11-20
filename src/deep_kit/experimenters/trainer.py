@@ -350,7 +350,6 @@ class Trainer(Operator):
             self.is_best = True
             self._train_epochs()
             
-
         self.logger_train.warn(f'------ Training finished ------')
 
         if hasattr(self.model, 'after_train'):
@@ -376,7 +375,7 @@ class Trainer(Operator):
             for i_repeat in range(self.cfg.exp[mode].n_repeat):
                 self.model.before_epoch(mode, i_repeat)
                 if self.cfg.model.task_sequential:
-                    print(f'-----------task-{self.task_idx} {mode} epoch begins -----------')
+                    print(f'----------- task-{self.task_idx} {mode} epoch begins -----------')
                 else:
                     print(f'----------- {mode} epoch begins -----------')
                 # obj_to_enumerate = data_loader
