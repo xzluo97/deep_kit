@@ -11,3 +11,4 @@ pyrightconfig.json
 *.un~
 *.lvimrc
 *.swp
+*.code-workspace

@@ -5,7 +5,7 @@ from rich.progress import track
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import IterableDataset, DataLoader
+from torch.utils.data import IterableDataset, DataLoader, ConcatDataset
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
@@ -29,7 +29,10 @@ class Trainer(Operator):
         self._init_seed()
         self._init_device()
         self._init_dataloaders()
-        cls_model, self.path_file_model = find_class(cfg.model.name, 'model')
+        if 'method' in cfg:
+            cls_model, self.path_file_model = find_class(cfg.method.name, 'method')
+        else:
+            cls_model, self.path_file_model = find_class(cfg.model.name, 'model')
         self.model = cls_model(cfg)
         if torch.__version__.startswith('2.'):
             if cfg.exp.compile_model:
@@ -47,49 +50,97 @@ class Trainer(Operator):
                 self.train_set, self.train_loader = cls_dataset(mode='train', cfg=self.cfg)
                 self.val_set, self.val_loader = cls_dataset(mode='val', cfg=self.cfg)
             else:
-                self.train_set = cls_dataset(mode='train', cfg=self.cfg)
-                self.val_set = cls_dataset(mode='val', cfg=self.cfg)
+                if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
+                    self.train_sets = [cls_dataset(mode='train', cfg=self.cfg, task=task) 
+                                       for task in self.cfg.dataset.train_tasks]
+                    self.val_sets = [cls_dataset(mode='val', cfg=self.cfg, task=task) 
+                                     for task in self.cfg.dataset.train_tasks]
 
-                if self.cfg.var.is_parallel:
-                    self.sampler_train = DistributedSampler(self.train_set)
-                    shuffle_train = False
+                    if self.cfg.var.is_parallel:
+                        self.sampler_trains = [DistributedSampler(dataset) for dataset in self.train_sets]
+                        shuffle_train = False
+                    else:
+                        shuffle_train = not issubclass(type(self.train_sets[0]), IterableDataset)
+                    
+                    self.train_loaders = [
+                        DataLoader(dataset=self.train_sets[i],
+                                   batch_size=self.cfg.exp.train.batch_size,
+                                   collate_fn=getattr(self.train_sets[i], 'get_batch', None),
+                                   num_workers=self.cfg.exp.n_workers,
+                                   shuffle=shuffle_train,
+                                   pin_memory=True,
+                                   drop_last=True,
+                                   sampler=self.sampler_trains[i]
+                                   if self.cfg.var.is_parallel and not issubclass(type(self.train_set), IterableDataset) else None,
+                                   )
+                        for i in range(len(self.cfg.dataset.train_tasks))]
+                    self.val_loaders = [
+                        DataLoader(dataset=self.val_sets[i],
+                                   batch_size=self.cfg.exp.val.batch_size,
+                                   collate_fn=getattr(self.val_sets[i], 'get_batch', None),
+                                   num_workers=self.cfg.exp.n_workers,
+                                   shuffle=False,
+                                   pin_memory=True,
+                                   )
+                        for i in range(len(self.cfg.dataset.train_tasks))]
+                    
                 else:
-                    shuffle_train = not issubclass(type(self.train_set), IterableDataset)
+                    self.train_set = cls_dataset(mode='train', cfg=self.cfg)
+                    self.val_set = cls_dataset(mode='val', cfg=self.cfg)
 
-                self.train_loader = DataLoader(
-                    dataset=self.train_set,
-                    batch_size=self.cfg.exp.train.batch_size,
-                    collate_fn=getattr(self.train_set, 'get_batch', None),
-                    num_workers=self.cfg.exp.n_workers,
-                    shuffle=shuffle_train,
-                    pin_memory=True,
-                    drop_last=True,
-                    sampler=self.sampler_train
-                    if self.cfg.var.is_parallel and not issubclass(type(self.train_set), IterableDataset) else None,
-                )
-                self.val_loader = DataLoader(
-                    dataset=self.val_set,
-                    batch_size=self.cfg.exp.val.batch_size,
-                    collate_fn=getattr(self.val_set, 'get_batch', None),
-                    num_workers=self.cfg.exp.n_workers,
-                    shuffle=False,
-                    pin_memory=True,
-                )
+                    if self.cfg.var.is_parallel:
+                        self.sampler_train = DistributedSampler(self.train_set)
+                        shuffle_train = False
+                    else:
+                        shuffle_train = not issubclass(type(self.train_set), IterableDataset)
+
+                    self.train_loader = DataLoader(
+                        dataset=self.train_set,
+                        batch_size=self.cfg.exp.train.batch_size,
+                        collate_fn=getattr(self.train_set, 'get_batch', None),
+                        num_workers=self.cfg.exp.n_workers,
+                        shuffle=shuffle_train,
+                        pin_memory=True,
+                        drop_last=True,
+                        sampler=self.sampler_train
+                        if self.cfg.var.is_parallel and not issubclass(type(self.train_set), IterableDataset) else None,
+                    )
+                    self.val_loader = DataLoader(
+                        dataset=self.val_set,
+                        batch_size=self.cfg.exp.val.batch_size,
+                        collate_fn=getattr(self.val_set, 'get_batch', None),
+                        num_workers=self.cfg.exp.n_workers,
+                        shuffle=False,
+                        pin_memory=True,
+                    )
         elif self.cfg.exp.mode != 'test':
             raise ValueError
 
         if self.cfg.exp.customize_dataloader:
             self.test_set, self.test_loader = cls_dataset(mode='test', cfg=self.cfg)
         else:
-            self.test_set = cls_dataset(mode='test', cfg=self.cfg)
-            self.test_loader = DataLoader(
-                dataset=self.test_set,
-                batch_size=self.cfg.exp.test.batch_size,
-                collate_fn=getattr(self.test_set, 'get_batch', None),
-                num_workers=self.cfg.exp.n_workers,
-                shuffle=False,
-                pin_memory=True,
-            )
+            if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
+                self.test_sets = [cls_dataset(mode='test', cfg=self.cfg, task=task)
+                                  for task in self.cfg.dataset.test_tasks]
+                self.test_loaders = [
+                    DataLoader(dataset=self.test_sets[i],
+                               batch_size=self.cfg.exp.test.batch_size,
+                               collate_fn=getattr(self.test_sets[i], 'get_batch', None),
+                               num_workers=self.cfg.exp.n_workers,
+                               shuffle=False,
+                               pin_memory=True,
+                               )
+                    for i in range(len(self.cfg.dataset.test_tasks))]
+            else:
+                self.test_set = cls_dataset(mode='test', cfg=self.cfg)
+                self.test_loader = DataLoader(
+                    dataset=self.test_set,
+                    batch_size=self.cfg.exp.test.batch_size,
+                    collate_fn=getattr(self.test_set, 'get_batch', None),
+                    num_workers=self.cfg.exp.n_workers,
+                    shuffle=False,
+                    pin_memory=True,
+                )
 
     def _init_loggers(self):
         path_all = os.path.join(self.path_log, 'log_all.txt')
@@ -150,35 +201,9 @@ class Trainer(Operator):
             scheduler = None
 
         return optimizer, scheduler
-
-    def train(self):
-        self.logger_extra.warn(f'------ Training ------')
-        self.model = self.model.to(self.device)
-        if self.cfg.var.is_parallel:
-            id_device = self.cfg.exp.idx_device[dist.get_rank()]
-            self.model = nn.SyncBatchNorm.convert_sync_batchnorm(self.model)
-            self.model = MyDistributedDataParallel(self.model, device_ids=[id_device])
-        if self.cfg.exp.train.use_gradscaler:
-            self.gradscaler = torch.cuda.amp.GradScaler()
-
-        self.optimizer, scheduler = self._get_optimizer(getattr(self.model, 'get_params', self.model.parameters)())
-
-        if self.cfg.exp.train.path_model_trained is not None:
-            if self.cfg.var.is_parallel:
-                dist.barrier()
-                id_device = self.cfg.exp.idx_device[dist.get_rank()]
-                map_location = {'cuda:0': f'cuda:{id_device}'}
-            else:
-                map_location = self.device
-            self.model.load_state_dict(torch.load(self.cfg.exp.train.path_model_trained, map_location=map_location),
-                                       strict=True)
-        self.score_best = -math.inf
-        self.score_best_test = -math.inf
-        self.is_best = True
+    
+    def _train_epochs(self):
         iter_total = 0
-
-        if hasattr(self.model, 'before_train'):
-            self.model.before_train()
 
         for epoch in range(self.cfg.exp.train.epoch_start, self.cfg.exp.train.n_epochs):
             # validation
@@ -209,31 +234,49 @@ class Trainer(Operator):
                 self.sampler_train.set_epoch(epoch)
 
             print('----------- training epoch begins -----------')
-            # if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
-            #     obj_to_enumerate = track(self.train_loader, transient=True, description='training')
-            # else:
-            #     obj_to_enumerate = self.train_loader
-            obj_to_enumerate = self.train_loader
+            if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
+                if self.cfg.model.task_sequential:
+                    obj_to_enumerate = track(self.train_loaders[self.task_idx], transient=True, description='training')
+                else:
+                    obj_to_enumerate = track(self.train_loader, transient=True, description='training')
+            else:
+                if self.cfg.model.task_sequential:
+                    obj_to_enumerate = self.train_loaders[self.task_idx]
+                else:
+                    obj_to_enumerate = self.train_loader
+                
             for _, data in enumerate(obj_to_enumerate):
                 iter_total += 1
 
-                self.optimizer.zero_grad()
                 if not self.cfg.exp.customize_dataloader:
-                    if hasattr(self.train_set, 'to_device'):
-                        data = self.train_set.to_device(data, device=self.device)
+                    if self.cfg.model.task_sequential:
+                        if hasattr(self.train_sets[self.task_idx], 'to_device'):
+                            data = self.train_sets[self.task_idx].to_device(data, device=self.device)
+                        else:
+                            input, ground_truth = data
+                            data = input.to(self.device), ground_truth.to(self.device)
                     else:
-                        input, ground_truth = data
-                        data = input.to(self.device), ground_truth.to(self.device)
-                output = self.model(data)
-                metrics = self.model.get_metrics(data, output, mode='train')
-                if self.cfg.exp.train.use_gradscaler:
-                    self.gradscaler.scale(metrics['loss_final']).backward()
-                    self.gradscaler.unscale_(self.optimizer)
-                    self.gradscaler.step(self.optimizer)
-                    self.gradscaler.update()
+                        if hasattr(self.train_set, 'to_device'):
+                            data = self.train_set.to_device(data, device=self.device)
+                        else:
+                            input, ground_truth = data
+                            data = input.to(self.device), ground_truth.to(self.device)
+                
+                if self.cfg.model.task_sequential:
+                    output = self.model.observe(data)
+                    metrics = self.model.metrics
                 else:
-                    metrics['loss_final'].backward()
-                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+                    output = self.model(data)
+                    metrics = self.model.get_metrics(data, output, mode='train')
+                    if self.cfg.exp.train.use_gradscaler:
+                        self.gradscaler.scale(metrics['loss_final']).backward()
+                        self.gradscaler.unscale_(self.optimizer)
+                        self.gradscaler.step(self.optimizer)
+                        self.gradscaler.update()
+                    else:
+                        metrics['loss_final'].backward()
+                        self.optimizer.step()
 
                 for name, value in metrics.items():
                     if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
@@ -244,8 +287,9 @@ class Trainer(Operator):
             if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
                 self.model.vis(self.writer, epoch, data, output, mode='train', in_epoch=False)
 
-            if scheduler:
-                scheduler.step()
+            if hasattr(self, 'scheduler'):
+                if self.scheduler:
+                    self.scheduler.step()
 
             result_log = [f'epoch: {epoch}']
             for name, value in self.model.metrics_epoch.items():
@@ -253,6 +297,59 @@ class Trainer(Operator):
             info_logged = ', '.join(result_log)
             self.logger_extra.warn(f'[train] {info_logged}')
             self.logger_train.info(info_logged)
+            
+        return iter_total, epoch
+
+    def train(self):
+        self.logger_extra.warn(f'------ Training ------')
+        self.model = self.model.to(self.device)
+        if self.cfg.var.is_parallel:
+            id_device = self.cfg.exp.idx_device[dist.get_rank()]
+            self.model = nn.SyncBatchNorm.convert_sync_batchnorm(self.model)
+            self.model = MyDistributedDataParallel(self.model, device_ids=[id_device])
+        if self.cfg.exp.train.use_gradscaler:
+            self.cfg.var.gradscaler = torch.cuda.amp.GradScaler()
+
+        if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
+            pass
+        else:
+            self.optimizer, self.scheduler = self._get_optimizer(getattr(self.model, 'get_params', self.model.parameters)())
+
+        if self.cfg.exp.train.path_model_trained is not None:
+            if self.cfg.var.is_parallel:
+                dist.barrier()
+                id_device = self.cfg.exp.idx_device[dist.get_rank()]
+                map_location = {'cuda:0': f'cuda:{id_device}'}
+            else:
+                map_location = self.device
+            self.model.load_state_dict(torch.load(self.cfg.exp.train.path_model_trained, map_location=map_location),
+                                       strict=True)
+       
+        if hasattr(self.model, 'before_train'):
+            self.model.before_train()
+
+        if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
+            for task_idx in range(len(self.cfg.dataset.train_tasks)):
+                self.task_idx = task_idx
+                self.score_best = -math.inf
+                self.score_best_test = -math.inf
+                self.is_best = True
+                _, epoch = self._train_epochs()
+                
+                if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
+                    self.val(epoch, mode='val')
+                    if self.is_best:
+                        self.val(epoch, mode='test')
+                
+                if hasattr(self.model, 'end_task'):
+                    self.model.end_task(self.train_loaders[task_idx])     
+                
+        else:   
+            self.score_best = -math.inf
+            self.score_best_test = -math.inf
+            self.is_best = True
+            self._train_epochs()
+            
 
         self.logger_train.warn(f'------ Training finished ------')
 
@@ -266,17 +363,24 @@ class Trainer(Operator):
         assert mode in ['val', 'test']
         self.is_best = False
         self.is_best_test = False
-        data_loader = getattr(self, f'{mode}_loader')
-        dataset = getattr(self, f'{mode}_set')
+        if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
+            data_loader = getattr(self, f'{mode}_loaders')[self.task_idx]
+            dataset = getattr(self, f'{mode}_sets')[self.task_idx]
+        else:
+            data_loader = getattr(self, f'{mode}_loader')
+            dataset = getattr(self, f'{mode}_set')
 
         with torch.no_grad():
             self.model.eval()
 
             for i_repeat in range(self.cfg.exp[mode].n_repeat):
                 self.model.before_epoch(mode, i_repeat)
-                print(f'----------- {mode} epoch begins -----------')
-                obj_to_enumerate = data_loader
-                # obj_to_enumerate = track(data_loader, transient=True, description=mode)
+                if self.cfg.model.task_sequential:
+                    print(f'-----------task-{self.task_idx} {mode} epoch begins -----------')
+                else:
+                    print(f'----------- {mode} epoch begins -----------')
+                # obj_to_enumerate = data_loader
+                obj_to_enumerate = track(data_loader, transient=True, description=mode)
                 for _, data in enumerate(obj_to_enumerate):
                     if not self.cfg.exp.customize_dataloader:
                         if hasattr(dataset, 'to_device'):
