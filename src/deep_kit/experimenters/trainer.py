@@ -293,6 +293,8 @@ class Trainer(Operator):
                     self.scheduler.step()
 
             result_log = [f'epoch: {self.epoch_total}']
+            if self.cfg.model.task_sequential:
+                result_log += [f'task: {self.cfg.dataset.train_tasks[self.task_idx]}']
             for name, value in self.model.metrics_epoch.items():
                 result_log.append(f'{name}: {value:.4f}')
             info_logged = ', '.join(result_log)
@@ -423,6 +425,12 @@ class Trainer(Operator):
                         self.score_best_test = self.model.metrics_epoch['metric_final']
 
                 result_log = [f'epoch: {epoch}']
+                if self.cfg.model.task_sequential:
+                    if mode in ['train', 'val']:
+                        result_log += [f'task: {self.cfg.dataset.train_tasks[self.task_idx]}']
+                    else:
+                        result_log += [f'task: {self.cfg.dataset.test_tasks[self.task_idx]}']
+
                 for (name, value) in self.model.metrics_epoch.items():
                     result_log.append(f'{name}: {value:.4f}')
                 info_logged = ', '.join(result_log)
