@@ -1,5 +1,6 @@
 import os
 import math
+import numpy as np
 from rich.progress import track
 
 import torch
@@ -204,7 +205,7 @@ class Trainer(Operator):
     
     def _train_epochs(self):
 
-        for epoch in range(self.cfg.exp.train.epoch_start, self.cfg.exp.train.n_epochs):
+        for epoch in range(self.epoch_start, self.epoch_end):
             self.epoch_total += 1
             # validation
             if epoch == self.cfg.exp.train.epoch_start:
@@ -331,7 +332,18 @@ class Trainer(Operator):
         self.epoch_total = 0
         self.iter_total = 0
         if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
+            if isinstance(self.cfg.exp.train.n_epochs, (float, int)):
+                self.n_epochs = [self.cfg.exp.train.n_epochs] * len(self.cfg.dataset.train_tasks)
+            elif isinstance(self.cfg.exp.train.n_epochs, (list, tuple)):
+                assert len(self.cfg.exp.train.n_epochs) == len(self.cfg.dataset.train_tasks)
+                self.n_epochs = list(self.cfg.exp.train.n_epochs)
+            else:
+                raise NotImplementedError
+            self.n_epochs.insert(0, 0)
+            self.cum_epochs = np.cumsum(self.n_epochs) + self.cfg.exp.train.epoch_start
             for task_idx in range(len(self.cfg.dataset.train_tasks)):
+                self.epoch_start = self.cum_epochs[task_idx]
+                self.epoch_end = self.cum_epochs[task_idx + 1]
                 self.task_idx = task_idx
                 self.score_best = -math.inf
                 self.score_best_test = -math.inf
@@ -347,6 +359,8 @@ class Trainer(Operator):
                     self.model.end_task(self.train_loaders[task_idx])     
                 
         else:   
+            self.epoch_start = self.cfg.exp.train.epoch_start
+            self.epoch_end = self.epoch_start + self.cfg.exp.train.n_epochs
             self.score_best = -math.inf
             self.score_best_test = -math.inf
             self.is_best = True
@@ -454,7 +468,12 @@ class Trainer(Operator):
         print(f'loading pretrained model for test from path {self.cfg.exp.test.path_model_trained}')
         self.model.load_state_dict(dict_state, strict=True)
 
-        self.val(epoch=0, mode='test')
+        if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
+            for task_idx in range(len(self.cfg.dataset.test_tasks)):
+                self.task_idx = task_idx
+                self.val(epoch=0, mode='test')
+        else:
+            self.val(epoch=0, mode='test')
 
         if self.cfg.var.is_parallel:
             dist.destroy_process_group()
