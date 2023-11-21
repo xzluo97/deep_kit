@@ -334,7 +334,7 @@ class Trainer(Operator):
         if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
             if isinstance(self.cfg.exp.train.n_epochs, (float, int)):
                 self.n_epochs = [self.cfg.exp.train.n_epochs] * len(self.cfg.dataset.train_tasks)
-            elif isinstance(self.cfg.exp.train.n_epochs, (list, tuple)):
+            elif isinstance(list(self.cfg.exp.train.n_epochs), list):
                 assert len(self.cfg.exp.train.n_epochs) == len(self.cfg.dataset.train_tasks)
                 self.n_epochs = list(self.cfg.exp.train.n_epochs)
             else:
