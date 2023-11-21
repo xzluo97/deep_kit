@@ -203,9 +203,9 @@ class Trainer(Operator):
         return optimizer, scheduler
     
     def _train_epochs(self):
-        iter_total = 0
 
         for epoch in range(self.cfg.exp.train.epoch_start, self.cfg.exp.train.n_epochs):
+            self.epoch_total += 1
             # validation
             if epoch == self.cfg.exp.train.epoch_start:
                 if self.cfg.exp.val.skip_initial_val:
@@ -220,18 +220,18 @@ class Trainer(Operator):
                 skip_val = False
             if not skip_val:
                 if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
-                    self.val(epoch, mode='val')
+                    self.val(self.epoch_total, mode='val')
                     if self.is_best:
-                        self.val(epoch, mode='test')
+                        self.val(self.epoch_total, mode='test')
             if self.cfg.var.is_parallel:
                 dist.barrier()
 
             self.model.train()
-            self.model.before_epoch(mode='train', i_repeat=epoch)
+            self.model.before_epoch(mode='train', i_repeat=self.epoch_total)
 
             if self.cfg.var.is_parallel:
                 # see WARNING in https://pytorch.org/docs/stable/data.html#torch.utils.data.distributed.DistributedSampler
-                self.sampler_train.set_epoch(epoch)
+                self.sampler_train.set_epoch(self.epoch_total)
 
             print('----------- training epoch begins -----------')
             if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
@@ -246,7 +246,7 @@ class Trainer(Operator):
                     obj_to_enumerate = self.train_loader
                 
             for _, data in enumerate(obj_to_enumerate):
-                iter_total += 1
+                self.iter_total += 1
 
                 if not self.cfg.exp.customize_dataloader:
                     if self.cfg.model.task_sequential:
@@ -280,25 +280,25 @@ class Trainer(Operator):
 
                 for name, value in metrics.items():
                     if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
-                        self.writer.add_scalar(f'train/{name}', value, iter_total)
+                        self.writer.add_scalar(f'train/{name}', value, self.iter_total)
 
             self.model.after_epoch(mode='train')
 
             if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
-                self.model.vis(self.writer, epoch, data, output, mode='train', in_epoch=False)
+                self.model.vis(self.writer, self.epoch_total, data, output, mode='train', in_epoch=False)
 
             if hasattr(self, 'scheduler'):
                 if self.scheduler:
                     self.scheduler.step()
 
-            result_log = [f'epoch: {epoch}']
+            result_log = [f'epoch: {self.epoch_total}']
             for name, value in self.model.metrics_epoch.items():
                 result_log.append(f'{name}: {value:.4f}')
             info_logged = ', '.join(result_log)
             self.logger_extra.warn(f'[train] {info_logged}')
             self.logger_train.info(info_logged)
             
-        return iter_total, epoch
+        return self.iter_total, self.epoch_total
 
     def train(self):
         self.logger_extra.warn(f'------ Training ------')
@@ -328,6 +328,8 @@ class Trainer(Operator):
         if hasattr(self.model, 'before_train'):
             self.model.before_train()
 
+        self.epoch_total = 0
+        self.iter_total = 0
         if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
             for task_idx in range(len(self.cfg.dataset.train_tasks)):
                 self.task_idx = task_idx
