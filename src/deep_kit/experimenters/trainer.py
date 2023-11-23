@@ -51,7 +51,7 @@ class Trainer(Operator):
                 self.train_set, self.train_loader = cls_dataset(mode='train', cfg=self.cfg)
                 self.val_set, self.val_loader = cls_dataset(mode='val', cfg=self.cfg)
             else:
-                if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
+                if self.cfg.model.task_sequential:
                     self.train_sets = [cls_dataset(mode='train', cfg=self.cfg, task=task) 
                                        for task in self.cfg.dataset.train_tasks]
                     self.val_sets = [cls_dataset(mode='val', cfg=self.cfg, task=task) 
@@ -120,7 +120,7 @@ class Trainer(Operator):
         if self.cfg.exp.customize_dataloader:
             self.test_set, self.test_loader = cls_dataset(mode='test', cfg=self.cfg)
         else:
-            if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
+            if self.cfg.model.task_sequential:
                 self.test_sets = [cls_dataset(mode='test', cfg=self.cfg, task=task)
                                   for task in self.cfg.dataset.test_tasks]
                 self.test_loaders = [
@@ -234,7 +234,10 @@ class Trainer(Operator):
                 # see WARNING in https://pytorch.org/docs/stable/data.html#torch.utils.data.distributed.DistributedSampler
                 self.sampler_train.set_epoch(self.epoch_total)
 
-            print('----------- training epoch begins -----------')
+            if self.cfg.model.task_sequential:
+                print(f'----------- task-{self.task_idx} training epoch begins -----------')
+            else:
+                print(f'----------- training epoch begins -----------')
             if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
                 if self.cfg.model.task_sequential:
                     obj_to_enumerate = track(self.train_loaders[self.task_idx], transient=True, description='training')
@@ -313,7 +316,7 @@ class Trainer(Operator):
         if self.cfg.exp.train.use_gradscaler:
             self.cfg.var.gradscaler = torch.cuda.amp.GradScaler()
 
-        if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
+        if self.cfg.model.task_sequential:
             pass
         else:
             self.optimizer, self.scheduler = self._get_optimizer(getattr(self.model, 'get_params', self.model.parameters)())
@@ -333,7 +336,7 @@ class Trainer(Operator):
 
         self.epoch_total = 0
         self.iter_total = 0
-        if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
+        if self.cfg.model.task_sequential:
             if isinstance(self.cfg.exp.train.n_epochs, (float, int)):
                 self.n_epochs = [self.cfg.exp.train.n_epochs] * len(self.cfg.dataset.train_tasks)
             elif isinstance(list(self.cfg.exp.train.n_epochs), list):
@@ -379,7 +382,7 @@ class Trainer(Operator):
         assert mode in ['val', 'test']
         self.is_best = False
         self.is_best_test = False
-        if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
+        if self.cfg.model.task_sequential:
             data_loader = getattr(self, f'{mode}_loaders')[self.task_idx]
             dataset = getattr(self, f'{mode}_sets')[self.task_idx]
         else:
@@ -475,7 +478,7 @@ class Trainer(Operator):
         print(f'loading pretrained model for test from path {self.cfg.exp.test.path_model_trained}')
         self.model.load_state_dict(dict_state, strict=True)
 
-        if 'task_sequential' in self.cfg.model and self.cfg.model.task_sequential:
+        if self.cfg.model.task_sequential:
             for task_idx in range(len(self.cfg.dataset.test_tasks)):
                 self.task_idx = task_idx
                 self.val(epoch=0, mode='test')
