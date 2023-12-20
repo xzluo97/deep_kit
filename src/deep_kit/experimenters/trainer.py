@@ -353,6 +353,10 @@ class Trainer(Operator):
                 self.score_best = -math.inf
                 self.score_best_test = -math.inf
                 self.is_best = True
+                
+                if hasattr(self.model, 'begin_task'):
+                    self.model.begin_task(self.train_loaders[task_idx])
+                
                 _, epoch = self._train_epochs()
                 
                 if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
@@ -413,7 +417,7 @@ class Trainer(Operator):
                         output = self.model.module(data)
                     else:
                         output = self.model(data)
-                    _ = self.model.get_metrics(data, output, mode=mode)
+                    self.model.get_metrics(data, output, mode=mode)
                     if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
                         self.model.vis(self.writer, epoch, data, output, mode=mode, in_epoch=True)
                 self.model.after_epoch(mode)
