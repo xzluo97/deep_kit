@@ -213,9 +213,9 @@ class Trainer(Operator):
                     skip_val = True
                 else:
                     skip_val = False
-            elif epoch % self.cfg.exp.val.n_epochs_once != 0:
+            elif self.epoch_total % self.cfg.exp.val.n_epochs_once != 0:
                 skip_val = True
-            elif epoch < self.cfg.exp.val.no_val_before_epoch:
+            elif self.epoch_total < self.cfg.exp.val.no_val_before_epoch:
                 skip_val = True
             else:
                 skip_val = False
@@ -378,6 +378,10 @@ class Trainer(Operator):
 
         if hasattr(self.model, 'after_train'):
             self.model.after_train()
+            
+        self.val(self.epoch_total, mode='val')
+        if self.is_best:
+            self.val(self.epoch_total, mode='test')
 
         if self.cfg.var.is_parallel:
             dist.destroy_process_group()
