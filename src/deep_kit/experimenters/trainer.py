@@ -285,6 +285,17 @@ class Trainer(Operator):
                 for name, value in metrics.items():
                     if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
                         self.writer.add_scalar(f'train/{name}', value, self.iter_total)
+                
+                # validation
+                if self.iter_total % self.cfg.exp.val.n_iters_once == 0:
+                    if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
+                        self.val(self.iter_total, mode='val', val_iter=True)
+                        if self.is_best:
+                            self.val(self.iter_total, mode='test', val_iter=True)
+                if self.cfg.var.is_parallel:
+                    dist.barrier()
+
+                self.model.train()
 
             self.model.after_epoch(mode='train')
 
@@ -298,7 +309,7 @@ class Trainer(Operator):
             result_log = [f'epoch: {self.epoch_total}']
             if self.cfg.model.task_sequential:
                 result_log += [f'task: {self.cfg.dataset.train_tasks[self.task_idx]}']
-            for name, value in self.model.metrics_epoch.items():
+            for name, value in self.model.metrics_epoch_train.items():
                 result_log.append(f'{name}: {value:.4f}')
             info_logged = ', '.join(result_log)
             self.logger_extra.warn(f'[train] {info_logged}')
@@ -386,7 +397,7 @@ class Trainer(Operator):
         if self.cfg.var.is_parallel:
             dist.destroy_process_group()
 
-    def val(self, epoch, mode='val'):
+    def val(self, epoch, mode='val', val_iter=False):
         assert mode in ['val', 'test']
         self.is_best = False
         self.is_best_test = False
@@ -396,6 +407,8 @@ class Trainer(Operator):
         else:
             data_loader = getattr(self, f'{mode}_loader')
             dataset = getattr(self, f'{mode}_set')
+            
+        mark = 'iter' if val_iter else 'epoch'
 
         with torch.no_grad():
             self.model.eval()
@@ -406,8 +419,10 @@ class Trainer(Operator):
                     print(f'----------- task-{self.task_idx} {mode} epoch begins -----------')
                 else:
                     print(f'----------- {mode} epoch begins -----------')
-                # obj_to_enumerate = data_loader
-                obj_to_enumerate = track(data_loader, transient=True, description=mode)
+                if val_iter:
+                    obj_to_enumerate = data_loader
+                else:
+                    obj_to_enumerate = track(data_loader, transient=True, description=mode)
                 for _, data in enumerate(obj_to_enumerate):
                     if not self.cfg.exp.customize_dataloader:
                         if hasattr(dataset, 'to_device'):
@@ -427,22 +442,22 @@ class Trainer(Operator):
                 self.model.after_epoch(mode)
 
                 if mode == 'val':
-                    self.is_best = self.model.metrics_epoch['metric_final'] > self.score_best
+                    self.is_best = self.model.metrics_epoch_val['metric_final'] > self.score_best
                     if self.is_best:
-                        self.score_best = self.model.metrics_epoch['metric_final']
+                        self.score_best = self.model.metrics_epoch_val['metric_final']
                 elif mode == 'test' and self.cfg.exp.mode == 'train':
-                    self.is_best_test = self.model.metrics_epoch['metric_final'] > self.score_best_test
+                    self.is_best_test = self.model.metrics_epoch_val['metric_final'] > self.score_best_test
                     if self.is_best_test:
-                        self.score_best_test = self.model.metrics_epoch['metric_final']
+                        self.score_best_test = self.model.metrics_epoch_val['metric_final']
 
-                result_log = [f'epoch: {epoch}']
+                result_log = [f'{mark}: {epoch}']
                 if self.cfg.model.task_sequential:
                     if mode in ['train', 'val']:
                         result_log += [f'task: {self.cfg.dataset.train_tasks[self.task_idx]}']
                     else:
                         result_log += [f'task: {self.cfg.dataset.test_tasks[self.task_idx]}']
 
-                for (name, value) in self.model.metrics_epoch.items():
+                for (name, value) in self.model.metrics_epoch_val.items():
                     result_log.append(f'{name}: {value:.4f}')
                 info_logged = ', '.join(result_log)
                 self.logger_extra.warn(f'[{mode}] {info_logged}')
@@ -451,29 +466,29 @@ class Trainer(Operator):
             if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
                 self.model.vis(self.writer, epoch, data, output, mode=mode, in_epoch=False)
 
-            for (name, value) in self.model.metrics_epoch.items():
+            for (name, value) in self.model.metrics_epoch_val.items():
                 if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
                     self.writer.add_scalar(f'{mode}/{name}', value, epoch)
 
             # save best model
             if mode == 'val' and self.is_best:
                 if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
-                    self.logger_checkpoints.warn(f'Saving best model on val set: epoch {epoch}')
+                    self.logger_checkpoints.warn(f'Saving best model on val set: {mark} {epoch}')
                     torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, 'model_best_val.pth'))
             if mode == 'test' and self.is_best_test and self.cfg.exp.train.save_best_model_on_test_set:
                 if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
-                    self.logger_checkpoints.warn(f'Saving best model on test set: epoch {epoch}')
+                    self.logger_checkpoints.warn(f'Saving best model on test set: {mark} {epoch}')
                     torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, 'model_best_test.pth'))
 
             if mode == 'val':
                 if getattr(self.cfg.exp.val, 'save_every_model', False):
-                    self.logger_checkpoints.warn(f'Saving current model: epoch {epoch}')
-                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, f'model_epoch{epoch}.pth'))
+                    self.logger_checkpoints.warn(f'Saving current model: {mark} {epoch}')
+                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, f'model_{mark}{epoch}.pth'))
                 elif self.is_best and getattr(self.cfg.exp.val, 'save_every_better_model', False):
-                    self.logger_checkpoints.warn(f'Saving current model: epoch {epoch}')
-                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, f'model_epoch{epoch}.pth'))
+                    self.logger_checkpoints.warn(f'Saving current model: {mark} {epoch}')
+                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, f'model_{mark}{epoch}.pth'))
                 if self.cfg.exp.val.save_latest_model:
-                    self.logger_checkpoints.warn(f'Saving latest model: epoch {epoch}')
+                    self.logger_checkpoints.warn(f'Saving latest model: {mark} {epoch}')
                     torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, 'model_latest.pth'))
 
     def test(self):
