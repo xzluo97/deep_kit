@@ -409,6 +409,7 @@ class Trainer(Operator):
             dataset = getattr(self, f'{mode}_set')
             
         mark = 'iter' if val_iter else 'epoch'
+        task_suffix = f'_{self.task_idx}' if self.cfg.model.task_sequential else ''
 
         with torch.no_grad():
             self.model.eval()
@@ -474,22 +475,22 @@ class Trainer(Operator):
             if mode == 'val' and self.is_best:
                 if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
                     self.logger_checkpoints.warn(f'Saving best model on val set: {mark} {epoch}')
-                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, 'model_best_val.pth'))
+                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, f'model_best_val{task_suffix}.pth'))
             if mode == 'test' and self.is_best_test and self.cfg.exp.train.save_best_model_on_test_set:
                 if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
                     self.logger_checkpoints.warn(f'Saving best model on test set: {mark} {epoch}')
-                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, 'model_best_test.pth'))
+                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, f'model_best_test{task_suffix}.pth'))
 
             if mode == 'val':
                 if getattr(self.cfg.exp.val, 'save_every_model', False):
                     self.logger_checkpoints.warn(f'Saving current model: {mark} {epoch}')
-                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, f'model_{mark}{epoch}.pth'))
+                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, f'model_{mark}{epoch}{task_suffix}.pth'))
                 elif self.is_best and getattr(self.cfg.exp.val, 'save_every_better_model', False):
                     self.logger_checkpoints.warn(f'Saving current model: {mark} {epoch}')
-                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, f'model_{mark}{epoch}.pth'))
+                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, f'model_{mark}{epoch}{task_suffix}.pth'))
                 if self.cfg.exp.val.save_latest_model:
                     self.logger_checkpoints.warn(f'Saving latest model: {mark} {epoch}')
-                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, 'model_latest.pth'))
+                    torch.save(self.model.state_dict(), os.path.join(self.path_checkpoints, f'model_latest{task_suffix}.pth'))
 
     def test(self):
         self.model = self.model.to(self.device)
