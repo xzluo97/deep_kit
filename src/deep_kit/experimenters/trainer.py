@@ -30,10 +30,9 @@ class Trainer(Operator):
         self._init_seed()
         self._init_device()
         self._init_dataloaders()
+        cls_model, self.path_file_model = find_class(cfg.model.name, 'model')
         if 'method' in cfg:
-            cls_model, self.path_file_model = find_class(cfg.method.name, 'method')
-        else:
-            cls_model, self.path_file_model = find_class(cfg.model.name, 'model')
+            cls_model, self.path_file_method = find_class(cfg.method.name, 'method')
         self.model = cls_model(cfg)
         if torch.__version__.startswith('2.'):
             if cfg.exp.compile_model:
@@ -73,6 +72,7 @@ class Trainer(Operator):
                                    drop_last=True,
                                    sampler=self.sampler_trains[i]
                                    if self.cfg.var.is_parallel and not issubclass(type(self.train_set), IterableDataset) else None,
+                                   worker_init_fn=lambda x: np.random.seed(42 + x)
                                    )
                         for i in range(len(self.cfg.dataset.train_tasks))]
                     self.val_loaders = [
@@ -82,6 +82,7 @@ class Trainer(Operator):
                                    num_workers=self.cfg.exp.n_workers,
                                    shuffle=False,
                                    pin_memory=True,
+                                   worker_init_fn=lambda x: np.random.seed(42 + x)
                                    )
                         for i in range(len(self.cfg.dataset.train_tasks))]
                     
@@ -105,6 +106,7 @@ class Trainer(Operator):
                         drop_last=True,
                         sampler=self.sampler_train
                         if self.cfg.var.is_parallel and not issubclass(type(self.train_set), IterableDataset) else None,
+                        worker_init_fn=lambda x: np.random.seed(42 + x)
                     )
                     self.val_loader = DataLoader(
                         dataset=self.val_set,
@@ -113,6 +115,7 @@ class Trainer(Operator):
                         num_workers=self.cfg.exp.n_workers,
                         shuffle=False,
                         pin_memory=True,
+                        worker_init_fn=lambda x: np.random.seed(42 + x)
                     )
         elif self.cfg.exp.mode != 'test':
             raise ValueError
@@ -165,8 +168,14 @@ class Trainer(Operator):
                 momentum=cfg_opt.momentum,
                 nesterov=cfg_opt.nesterov,
             )
-        elif name_opt in ('adam', 'adamw'):
+        elif name_opt == 'adam':
             optimizer = optim.Adam(
+                params=params,
+                lr=self.cfg.exp.train.optimizer.lr,
+                weight_decay=cfg_opt.weight_decay,
+            )
+        elif name_opt == 'adamw':
+            optimizer = optim.AdamW(
                 params=params,
                 lr=self.cfg.exp.train.optimizer.lr,
                 weight_decay=cfg_opt.weight_decay,
@@ -389,10 +398,6 @@ class Trainer(Operator):
 
         if hasattr(self.model, 'after_train'):
             self.model.after_train()
-            
-        self.val(self.epoch_total, mode='val')
-        if self.is_best:
-            self.val(self.epoch_total, mode='test')
 
         if self.cfg.var.is_parallel:
             dist.destroy_process_group()
@@ -409,7 +414,7 @@ class Trainer(Operator):
             dataset = getattr(self, f'{mode}_set')
             
         mark = 'iter' if val_iter else 'epoch'
-        task_suffix = f'_{self.task_idx}' if self.cfg.model.task_sequential else ''
+        task_suffix = f'_task{self.task_idx}' if self.cfg.model.task_sequential else ''
 
         with torch.no_grad():
             self.model.eval()
@@ -495,7 +500,15 @@ class Trainer(Operator):
     def test(self):
         self.model = self.model.to(self.device)
 
-        dict_state = torch.load(self.cfg.exp.test.path_model_trained, map_location=self.device)
+        if self.cfg.exp.test.path_model_trained is None:
+            print('warning: no model is loaded')
+        else:
+            dict_state = torch.load(self.cfg.exp.test.path_model_trained, map_location=self.device)
+            for key in list(dict_state.keys()):
+                if key.startswith('module.'):
+                    dict_state[key[7:]] = dict_state.pop(key)
+            self.model.load_state_dict(dict_state, strict=False)
+
         for key in list(dict_state.keys()):
             if key.startswith('module.'):
                 dict_state[key[7:]] = dict_state.pop(key)

@@ -98,8 +98,7 @@ class Operator:
             os.makedirs(self.path_log)
         
         if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
-            for path in self.model.paths_file_net + [self.path_file_model, self.path_file_dataset]:
-                self.path_backup = os.path.join(self.path_exp, 'backup')
+            self.path_backup = os.path.join(self.path_exp, 'backup')
             if not os.path.exists(self.path_backup):
                 os.makedirs(self.path_backup)
             if not os.path.exists(os.path.join(self.path_backup, 'networks')):
@@ -108,11 +107,17 @@ class Operator:
                 os.makedirs(os.path.join(self.path_backup, 'datasets'))
             if not os.path.exists(os.path.join(self.path_backup, 'models')):
                 os.makedirs(os.path.join(self.path_backup, 'models'))
+                
+            if 'method' in self.cfg:
+                if not os.path.exists(os.path.join(self.path_backup, 'methods')):
+                    os.makedirs(os.path.join(self.path_backup, 'methods'))
+                _ = shutil.copyfile(self.path_file_method, os.path.join(self.path_backup, 'methods', os.path.basename(self.path_file_method)))
+            
             for path in self.model.paths_file_net:
                 _ = shutil.copyfile(path, os.path.join(self.path_backup, 'networks', os.path.basename(path)))
+                
             _ = shutil.copyfile(path, os.path.join(self.path_backup, 'models', os.path.basename(self.path_file_model)))
-            _ = shutil.copyfile(path,
-                                os.path.join(self.path_backup, 'datasets', os.path.basename(self.path_file_dataset)))
+            _ = shutil.copyfile(path, os.path.join(self.path_backup, 'datasets', os.path.basename(self.path_file_dataset)))
 
             if (self.cfg.exp.names_exp_delete is not None) and os.path.exists(self.cfg.exp.path_save):
                 for name_exp_delete in self.cfg.exp.names_exp_delete:
