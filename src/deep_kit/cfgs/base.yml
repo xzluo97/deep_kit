@@ -1,3 +1,7 @@
+_meta:
+    project: ???
+    clearml: True
+
 exp:
     name: tmp
     names_exp_delete: null
@@ -7,6 +11,7 @@ exp:
     n_workers: 0
     compile_model: False # for pytorch 2.0+
     customize_dataloader: False
+    matmul_tf32: True
 
     mode: train
     train:

@@ -1,3 +1,5 @@
+from clearml import Task
+
 from omegaconf import OmegaConf as Ocfg
 import importlib.resources
 from .. import cfgs
@@ -32,3 +34,31 @@ cfg.exp.train.scheduler = Ocfg.masked_copy(cfg.exp.train.scheduler, keys_masked_
 
 Ocfg.set_readonly(cfg, True)
 Ocfg.set_readonly(cfg.var, False)
+
+
+def flatten_dict(nested_dict, parent_key='', sep='.'):
+    flat_dict = {}
+    for key, value in nested_dict.items():
+        if key in ['var', '_meta']:
+            continue
+        new_key = f"{parent_key}{sep}{key}" if parent_key else key
+        if isinstance(value, dict):
+            flat_dict.update(flatten_dict(value, new_key))
+        else:
+            flat_dict[new_key] = value
+    return flat_dict
+
+
+if cfg._meta.clearml:
+    if cfg.exp.mode == 'train':
+        task_type = 'training'
+    elif cfg.exp.mode == 'test':
+        task_type = 'testing'
+    else:
+        raise ValueError
+
+    task = Task.init(project_name=cfg._meta.project, task_name=cfg.exp.name, task_type=task_type)
+
+    dict_cfg = flatten_dict(Ocfg.to_container(cfg))
+    dict_cfg = {k.replace('.', '/', 1): v for k, v in dict_cfg.items()}
+    task.set_parameters(dict_cfg)

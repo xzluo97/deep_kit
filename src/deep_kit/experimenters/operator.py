@@ -30,6 +30,10 @@ class Operator:
         else:
             cfg.var.is_parallel = False
 
+        if cfg.exp.matmul_tf32:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+
     def _init_seed(self):
         if self.cfg.exp.rand_seed is None:
             torch.backends.cudnn.benchmark = True
@@ -84,13 +88,14 @@ class Operator:
 
         self.time_exp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 
-        self.name_exp = f'{self.cfg.exp.mode}_{self.cfg.exp.name}_{self.time_exp}'
-        self.path_exp = os.path.join(self.cfg.exp.path_save, self.name_exp)
+        self.path_save = os.path.join(self.cfg.exp.path_save, os.path.split(self.cfg.exp.name)[0])
+        self.name_exp = f'{self.cfg.exp.mode}_{os.path.split(self.cfg.exp.name)[1]}_{self.time_exp}'
+        self.path_exp = os.path.join(self.path_save, self.name_exp)
         if self.cfg.exp.mode == 'train':
             self.path_checkpoints = os.path.join(self.path_exp, 'checkpoints')
             if not os.path.exists(self.path_checkpoints):
                 os.makedirs(self.path_checkpoints)
-        self.path_vis = os.path.join(self.cfg.exp.path_save, 'runs', self.name_exp)
+        self.path_vis = os.path.join(self.path_save, 'runs', self.name_exp)
         if not os.path.exists(self.path_vis):
             os.makedirs(self.path_vis)
         self.path_log = self.path_exp
@@ -116,13 +121,13 @@ class Operator:
             for path in self.model.paths_file_net:
                 _ = shutil.copyfile(path, os.path.join(self.path_backup, 'networks', os.path.basename(path)))
                 
-            _ = shutil.copyfile(path, os.path.join(self.path_backup, 'models', os.path.basename(self.path_file_model)))
-            _ = shutil.copyfile(path, os.path.join(self.path_backup, 'datasets', os.path.basename(self.path_file_dataset)))
+            _ = shutil.copyfile(self.path_file_model, os.path.join(self.path_backup, 'models', os.path.basename(self.path_file_model)))
+            _ = shutil.copyfile(self.path_file_dataset, os.path.join(self.path_backup, 'datasets', os.path.basename(self.path_file_dataset)))
 
-            if (self.cfg.exp.names_exp_delete is not None) and os.path.exists(self.cfg.exp.path_save):
+            if (self.cfg.exp.names_exp_delete is not None) and os.path.exists(self.path_save):
                 for name_exp_delete in self.cfg.exp.names_exp_delete:
                     if ('tmp' not in name_exp_delete
-                            and not name_exp_delete.startswith(f'{self.cfg.exp.mode}_{self.cfg.exp.name}')):
+                            and not name_exp_delete.startswith(f'{self.cfg.exp.mode}_{os.path.split(self.cfg.exp.name)[1]}')):
                         answer = yesno(
                             f'The experiment mode is {self.cfg.exp.mode} and the experiment name is {self.cfg.exp.name}, '
                             + f'but cfg.exp.names_exp_delete contains a string "{name_exp_delete}", ' +
@@ -132,12 +137,12 @@ class Operator:
                             raise ValueError('You said you do not want to delete that folder. ' +
                                              'Please change exp.name_exp_delete.')
                 
-                dirs_exp = os.listdir(self.cfg.exp.path_save)
+                dirs_exp = os.listdir(self.path_save)
                 for dir in dirs_exp:
                     if dir != self.name_exp and check_substrings():
-                        shutil.rmtree(os.path.join(self.cfg.exp.path_save, dir))
-                        if os.path.exists(os.path.join(self.cfg.exp.path_save, 'runs', dir)):
-                            shutil.rmtree(os.path.join(self.cfg.exp.path_save, 'runs', dir))
+                        shutil.rmtree(os.path.join(self.path_save, dir))
+                        if os.path.exists(os.path.join(self.path_save, 'runs', dir)):
+                            shutil.rmtree(os.path.join(self.path_save, 'runs', dir))
 
     def _init_writer(self):
         if (not self.cfg.var.is_parallel) or dist.get_rank() == 0:
